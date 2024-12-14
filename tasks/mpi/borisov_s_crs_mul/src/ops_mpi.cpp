@@ -72,7 +72,6 @@ bool CrsMatrixMulTaskMPI::validation() {
   return true;
 }
 
-
 bool CrsMatrixMulTaskMPI::run() {
   internal_order_test();
 
