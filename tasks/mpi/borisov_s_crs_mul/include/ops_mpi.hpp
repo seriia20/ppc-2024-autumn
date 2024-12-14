@@ -37,10 +37,9 @@ class CrsMatrixMulTaskMPI : public ppc::core::Task {
   std::vector<int> C_col_index_;
   std::vector<int> C_row_ptr_;
 
-  int A_nrows_, A_ncols_, A_nnz_;
-  int B_nrows_, B_ncols_, B_nnz_;
+  int A_nrows_;
+  int B_ncols_, B_nnz_;
   int C_nrows_, C_ncols_;
-  int C_nnz_;
 
   boost::mpi::communicator world;
 };
