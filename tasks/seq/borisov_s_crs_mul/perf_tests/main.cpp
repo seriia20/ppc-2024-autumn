@@ -1,29 +1,91 @@
 // Copyright 2023 Nesterov Alexander
 #include <gtest/gtest.h>
 
+#include <random>
 #include <vector>
 
 #include "core/perf/include/perf.hpp"
-#include "seq/example/include/ops_seq.hpp"
+#include "seq/borisov_s_crs_mul/include/ops_seq.hpp"
 
-TEST(sequential_example_perf_test, test_pipeline_run) {
-  const int count = 100;
+static void generate_dense_matrix(int M, int N, double density, std::vector<double>& dense) {
+  std::mt19937_64 gen(42);
+  std::uniform_real_distribution<double> dist_val(0.1, 10.0);
+  std::uniform_real_distribution<double> dist_density(0.0, 1.0);
 
-  // Create data
-  std::vector<int> in(1, count);
-  std::vector<int> out(1, 0);
+  dense.resize(M * N, 0.0);
+  for (int i = 0; i < M; i++) {
+    for (int j = 0; j < N; j++) {
+      if (dist_density(gen) < density) {
+        dense[(i * N) + j] = dist_val(gen);
+      }
+    }
+  }
+}
 
-  // Create TaskData
-  std::shared_ptr<ppc::core::TaskData> taskDataSeq = std::make_shared<ppc::core::TaskData>();
-  taskDataSeq->inputs.emplace_back(reinterpret_cast<uint8_t *>(in.data()));
-  taskDataSeq->inputs_count.emplace_back(in.size());
-  taskDataSeq->outputs.emplace_back(reinterpret_cast<uint8_t *>(out.data()));
-  taskDataSeq->outputs_count.emplace_back(out.size());
+// Функция преобразования плотной матрицы в CRS формат
+static void dense_to_crs(const std::vector<double>& dense, int M, int N, std::vector<double>& values,
+                         std::vector<int>& col_index, std::vector<int>& row_ptr) {
+  row_ptr.resize(M + 1, 0);
+  for (int i = 0; i < M; i++) {
+    for (int j = 0; j < N; j++) {
+      double val = dense[(i * N) + j];
+      if (val != 0.0) {
+        values.push_back(val);
+        col_index.push_back(j);
+      }
+    }
+    row_ptr[i + 1] = static_cast<int>(values.size());
+  }
+}
 
-  // Create Task
-  auto testTaskSequential = std::make_shared<nesterov_a_test_task_seq::TestTaskSequential>(taskDataSeq);
+// Тест производительности: pipeline_run
+TEST(Sequential_CRS_Matrix_Perf_Test, Test_Pipeline_Run) {
+  const int M = 1000;
+  const int N = 1000;
+  const int K = 1000;
+  const double density = 0.001;
 
-  // Create Perf attributes
+  // Генерация случайных матриц
+  std::vector<double> A_dense;
+  std::vector<double> B_dense;
+  generate_dense_matrix(M, N, density, A_dense);
+  generate_dense_matrix(N, K, density, B_dense);
+
+  // Преобразование матриц в CRS формат
+  std::vector<double> A_values;
+  std::vector<double> B_values;
+  std::vector<int> A_col_index;
+  std::vector<int> B_col_index;
+  std::vector<int> A_row_ptr;
+  std::vector<int> B_row_ptr;
+  dense_to_crs(A_dense, M, N, A_values, A_col_index, A_row_ptr);
+  dense_to_crs(B_dense, N, K, B_values, B_col_index, B_row_ptr);
+
+  // Создание TaskData
+  std::shared_ptr<ppc::core::TaskData> taskData = std::make_shared<ppc::core::TaskData>();
+  taskData->inputs = {reinterpret_cast<uint8_t*>(A_values.data()),    reinterpret_cast<uint8_t*>(A_col_index.data()),
+                      reinterpret_cast<uint8_t*>(A_row_ptr.data()),   reinterpret_cast<uint8_t*>(B_values.data()),
+                      reinterpret_cast<uint8_t*>(B_col_index.data()), reinterpret_cast<uint8_t*>(B_row_ptr.data())};
+
+  taskData->inputs_count = {
+      static_cast<unsigned int>(A_values.size()),    static_cast<unsigned int>(A_col_index.size()),
+      static_cast<unsigned int>(A_row_ptr.size()),   static_cast<unsigned int>(B_values.size()),
+      static_cast<unsigned int>(B_col_index.size()), static_cast<unsigned int>(B_row_ptr.size())};
+
+  std::vector<double> C_values(M * K, 0.0);
+  std::vector<int> C_col_index(M * K, 0);
+  std::vector<int> C_row_ptr(M + 1, 0);
+
+  taskData->outputs = {reinterpret_cast<uint8_t*>(C_values.data()), reinterpret_cast<uint8_t*>(C_col_index.data()),
+                       reinterpret_cast<uint8_t*>(C_row_ptr.data())};
+
+  taskData->outputs_count = {static_cast<unsigned int>(C_values.size()), static_cast<unsigned int>(C_col_index.size()),
+                             static_cast<unsigned int>(C_row_ptr.size())};
+
+  // Создание задачи
+  auto seqTask = std::make_shared<borisov_s_crs_mul::CrsMatrixMulTask>(taskData);
+
+  // Настройки производительности
   auto perfAttr = std::make_shared<ppc::core::PerfAttr>();
   perfAttr->num_running = 10;
   const auto t0 = std::chrono::high_resolution_clock::now();
@@ -33,34 +95,59 @@ TEST(sequential_example_perf_test, test_pipeline_run) {
     return static_cast<double>(duration) * 1e-9;
   };
 
-  // Create and init perf results
+  // Анализ производительности
   auto perfResults = std::make_shared<ppc::core::PerfResults>();
-
-  // Create Perf analyzer
-  auto perfAnalyzer = std::make_shared<ppc::core::Perf>(testTaskSequential);
+  auto perfAnalyzer = std::make_shared<ppc::core::Perf>(seqTask);
   perfAnalyzer->pipeline_run(perfAttr, perfResults);
   ppc::core::Perf::print_perf_statistic(perfResults);
-  ASSERT_EQ(count, out[0]);
 }
 
-TEST(sequential_example_perf_test, test_task_run) {
-  const int count = 100;
+// Тест производительности: task_run
+TEST(Sequential_CRS_Matrix_Perf_Test, Test_Task_Run) {
+  const int M = 1000;
+  const int N = 1000;
+  const int K = 1000;
+  const double density = 0.001;
 
-  // Create data
-  std::vector<int> in(1, count);
-  std::vector<int> out(1, 0);
+  std::vector<double> A_dense;
+  std::vector<double> B_dense;
+  generate_dense_matrix(M, N, density, A_dense);
+  generate_dense_matrix(N, K, density, B_dense);
 
-  // Create TaskData
-  std::shared_ptr<ppc::core::TaskData> taskDataSeq = std::make_shared<ppc::core::TaskData>();
-  taskDataSeq->inputs.emplace_back(reinterpret_cast<uint8_t *>(in.data()));
-  taskDataSeq->inputs_count.emplace_back(in.size());
-  taskDataSeq->outputs.emplace_back(reinterpret_cast<uint8_t *>(out.data()));
-  taskDataSeq->outputs_count.emplace_back(out.size());
+  std::vector<double> A_values;
+  std::vector<double> B_values;
+  std::vector<int> A_col_index;
+  std::vector<int> B_col_index;
+  std::vector<int> A_row_ptr;
+  std::vector<int> B_row_ptr;
+  dense_to_crs(A_dense, M, N, A_values, A_col_index, A_row_ptr);
+  dense_to_crs(B_dense, N, K, B_values, B_col_index, B_row_ptr);
 
-  // Create Task
-  auto testTaskSequential = std::make_shared<nesterov_a_test_task_seq::TestTaskSequential>(taskDataSeq);
+  // Создание TaskData
+  std::shared_ptr<ppc::core::TaskData> taskData = std::make_shared<ppc::core::TaskData>();
+  taskData->inputs = {reinterpret_cast<uint8_t*>(A_values.data()),    reinterpret_cast<uint8_t*>(A_col_index.data()),
+                      reinterpret_cast<uint8_t*>(A_row_ptr.data()),   reinterpret_cast<uint8_t*>(B_values.data()),
+                      reinterpret_cast<uint8_t*>(B_col_index.data()), reinterpret_cast<uint8_t*>(B_row_ptr.data())};
 
-  // Create Perf attributes
+  taskData->inputs_count = {
+      static_cast<unsigned int>(A_values.size()),    static_cast<unsigned int>(A_col_index.size()),
+      static_cast<unsigned int>(A_row_ptr.size()),   static_cast<unsigned int>(B_values.size()),
+      static_cast<unsigned int>(B_col_index.size()), static_cast<unsigned int>(B_row_ptr.size())};
+
+  std::vector<double> C_values(M * K, 0.0);
+  std::vector<int> C_col_index(M * K, 0);
+  std::vector<int> C_row_ptr(M + 1, 0);
+
+  taskData->outputs = {reinterpret_cast<uint8_t*>(C_values.data()), reinterpret_cast<uint8_t*>(C_col_index.data()),
+                       reinterpret_cast<uint8_t*>(C_row_ptr.data())};
+
+  taskData->outputs_count = {static_cast<unsigned int>(C_values.size()), static_cast<unsigned int>(C_col_index.size()),
+                             static_cast<unsigned int>(C_row_ptr.size())};
+
+  // Создание задачи
+  auto seqTask = std::make_shared<borisov_s_crs_mul::CrsMatrixMulTask>(taskData);
+
+  // Настройки производительности
   auto perfAttr = std::make_shared<ppc::core::PerfAttr>();
   perfAttr->num_running = 10;
   const auto t0 = std::chrono::high_resolution_clock::now();
@@ -70,17 +157,9 @@ TEST(sequential_example_perf_test, test_task_run) {
     return static_cast<double>(duration) * 1e-9;
   };
 
-  // Create and init perf results
+  // Анализ производительности
   auto perfResults = std::make_shared<ppc::core::PerfResults>();
-
-  // Create Perf analyzer
-  auto perfAnalyzer = std::make_shared<ppc::core::Perf>(testTaskSequential);
+  auto perfAnalyzer = std::make_shared<ppc::core::Perf>(seqTask);
   perfAnalyzer->task_run(perfAttr, perfResults);
   ppc::core::Perf::print_perf_statistic(perfResults);
-  ASSERT_EQ(count, out[0]);
-}
-
-int main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }
