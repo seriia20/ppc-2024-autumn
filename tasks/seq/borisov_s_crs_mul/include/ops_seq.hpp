@@ -17,18 +17,39 @@ class CrsMatrixMulTask : public ppc::core::Task {
   bool run() override;
   bool post_processing() override;
 
+  void initialize(const std::vector<double>& A_values, const std::vector<int>& A_col_index,
+                  const std::vector<int>& A_row_ptr, const std::vector<double>& B_values,
+                  const std::vector<int>& B_col_index, const std::vector<int>& B_row_ptr, int A_nrows, int A_ncols,
+                  int B_nrows, int B_ncols) {
+    A_values_ = A_values;
+    A_col_index_ = A_col_index;
+    A_row_ptr_ = A_row_ptr;
+
+    B_values_ = B_values;
+    B_col_index_ = B_col_index;
+    B_row_ptr_ = B_row_ptr;
+
+    A_nrows_ = A_nrows;
+    A_ncols_ = A_ncols;
+    B_nrows_ = B_nrows;
+    B_ncols_ = B_ncols;
+
+    C_nrows_ = A_nrows;
+    C_ncols_ = B_ncols;
+  }
+
  private:
-  const double* A_values_ = nullptr;
-  const int* A_col_index_ = nullptr;
-  const int* A_row_ptr_ = nullptr;
+  std::vector<double> A_values_;
+  std::vector<int> A_col_index_;
+  std::vector<int> A_row_ptr_;
 
-  const double* B_values_ = nullptr;
-  const int* B_col_index_ = nullptr;
-  const int* B_row_ptr_ = nullptr;
+  std::vector<double> B_values_;
+  std::vector<int> B_col_index_;
+  std::vector<int> B_row_ptr_;
 
-  double* C_values_ = nullptr;
-  int* C_col_index_ = nullptr;
-  int* C_row_ptr_ = nullptr;
+  std::vector<double> C_values_;
+  std::vector<int> C_col_index_;
+  std::vector<int> C_row_ptr_;
 
   int A_nrows_, A_ncols_, A_nnz_;
   int B_nrows_, B_ncols_, B_nnz_;
